@@ -183,11 +183,21 @@ class YahooProvider(BaseProvider):
             )
             if df is None or df.empty:
                 return None
+            # yfinance >= 0.2.40 returns MultiIndex columns like ('Close', 'GC=F')
+            # even for single tickers. Flatten to level-0 names so the rest of
+            # the pipeline (which expects flat 'close', 'open', ... columns) works.
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
             df = df.rename(
                 columns={"Open": "open", "High": "high", "Low": "low",
-                         "Close": "close", "Volume": "volume"}
+                         "Close": "close", "Volume": "volume",
+                         "Adj Close": "adj_close"}
             )
+            # Defensive: if duplicate column labels survived, keep the first.
+            df = df.loc[:, ~df.columns.duplicated()]
             keep = [c for c in ["open", "high", "low", "close", "volume"] if c in df.columns]
+            if not keep or "close" not in keep:
+                return None
             df = df[keep].dropna()
             df.index = pd.to_datetime(df.index).tz_localize(None)
             return df
@@ -198,12 +208,16 @@ class YahooProvider(BaseProvider):
         if self._usdinr_cache is not None:
             return self._usdinr_cache
         df = self._fetch_yahoo("INR=X", lookback_days)
-        if df is None or df.empty:
+        if df is None or df.empty or "close" not in df.columns:
             # Reasonable fallback so industrial-metal numbers are still in the right zip code
             idx = pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=lookback_days)
             self._usdinr_cache = pd.Series(83.0, index=idx, name="usdinr")
             return self._usdinr_cache
-        self._usdinr_cache = df["close"].rename("usdinr")
+        # Defensive: ensure we end up with a Series, not a 1-col DataFrame
+        close = df["close"]
+        if isinstance(close, pd.DataFrame):
+            close = close.iloc[:, 0]
+        self._usdinr_cache = pd.Series(close.values, index=close.index, name="usdinr")
         return self._usdinr_cache
 
     # --- interface ----------------------------------------------------------
