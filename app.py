@@ -1067,19 +1067,80 @@ with tab_groww:
         )
     else:
         # ------------------------------------------------------------------
-        # Connected — show the live mirror.
+        # Provider object exists. It may or may not be fully active.
         # ------------------------------------------------------------------
         col_a, col_b = st.columns([3, 1])
         with col_a:
-            st.success("✓ Connected to Groww — read-only mode")
+            if groww.is_active:
+                mode_label = {
+                    "token": "direct access token",
+                    "key_secret_totp": "API key + secret + TOTP",
+                }.get(groww.auth_mode or "", "unknown")
+                st.success(f"✓ Connected to Groww — read-only mode ({mode_label})")
+            else:
+                st.error("⚠ Groww credentials found but client failed to authenticate.")
         with col_b:
             refresh = st.button("🔄 Refresh now", use_container_width=True)
+
+        # If init itself failed, stop here and explain.
+        if not groww.is_active:
+            st.markdown("**Error details:**")
+            st.code(groww.last_error or "Unknown initialization error.", language="text")
+            st.markdown(
+                """
+                **Common causes & fixes:**
+
+                1. **You pasted an API Key alone** — Groww gives you both an *API Key*
+                   and an *API Secret*. The key alone won't authenticate. You need to
+                   either use the **API Key + Secret + TOTP** flow (recommended), or
+                   generate a separate **Access Token** from the Groww portal.
+
+                2. **Your access token expired** — Direct access tokens are
+                   short-lived (often 24 hours). Regenerate one and update the secret,
+                   or switch to the key+secret+TOTP flow which never expires.
+
+                3. **API subscription not active** — Confirm your ₹499/mo Groww API
+                   plan is currently active in your Groww account billing section.
+
+                4. **You used your Groww login password** — That won't work. Only
+                   tokens / keys generated from the Trade API portal work.
+
+                **To switch to the long-lived flow**, add these three secrets in
+                Streamlit Cloud → Settings → Secrets (instead of `GROWW_API_TOKEN`):
+
+                ```
+                GROWW_API_KEY = "your_api_key"
+                GROWW_API_SECRET = "your_api_secret"
+                GROWW_TOTP_SECRET = "your_totp_secret_from_authenticator_qr"
+                ```
+
+                The TOTP secret is the *seed* (long string) shown on the Groww portal
+                when you set up the authenticator — NOT the 6-digit code that changes
+                every 30 seconds.
+                """
+            )
+            st.stop()
 
         with st.spinner("Fetching your Groww snapshot..."):
             snap = groww.fetch_snapshot(force=refresh)
 
         if snap is None:
-            st.error("Connection initialized but snapshot fetch failed. Check API token validity.")
+            st.error("Snapshot fetch failed.")
+            st.markdown("**Error details:**")
+            st.code(groww.last_error or "No further details available.", language="text")
+            st.markdown(
+                """
+                The client connected but the holdings call was rejected by Groww's
+                servers. Most likely:
+
+                - The token / key has expired or been revoked
+                - Your API subscription lapsed
+                - Groww's API is temporarily down (rare)
+
+                Try regenerating a fresh token or rotating to the API Key + Secret +
+                TOTP flow described above.
+                """
+            )
         else:
             # Top-line metrics
             m1, m2, m3, m4 = st.columns(4)
