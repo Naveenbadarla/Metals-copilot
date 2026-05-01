@@ -369,6 +369,45 @@ def delta_html(value: float) -> str:
     return f'<span class="{cls}">{sign}{value:.2f}%</span>'
 
 
+def score_color(val: float, vmin: float = 0.0, vmax: float = 100.0) -> str:
+    """
+    Pure-Python red->yellow->green gradient for a 0-100 score.
+    Avoids the matplotlib dependency that pandas Styler.background_gradient pulls in.
+    Returns a CSS background-color string (rgb).
+    """
+    try:
+        v = float(val)
+    except (TypeError, ValueError):
+        return ""
+    if np.isnan(v):
+        return ""
+    # normalize 0..1
+    t = (v - vmin) / max(vmax - vmin, 1e-9)
+    t = max(0.0, min(1.0, t))
+    # red (220, 53, 69) -> yellow (210, 153, 34) -> green (63, 185, 80)
+    if t < 0.5:
+        # red -> yellow
+        u = t / 0.5
+        r = int(220 + (210 - 220) * u)
+        g = int(53 + (153 - 53) * u)
+        b = int(69 + (34 - 69) * u)
+    else:
+        # yellow -> green
+        u = (t - 0.5) / 0.5
+        r = int(210 + (63 - 210) * u)
+        g = int(153 + (185 - 153) * u)
+        b = int(34 + (80 - 34) * u)
+    return f"background-color: rgba({r},{g},{b},0.55); color: #f0f6fc;"
+
+
+def style_score_column(df: pd.DataFrame, col: str, vmin: float = 0.0, vmax: float = 100.0):
+    """Apply score_color to a single column without needing matplotlib."""
+    return df.style.apply(
+        lambda s: [score_color(v, vmin, vmax) if s.name == col else "" for v in s],
+        axis=0,
+    )
+
+
 # ===========================================================================
 # TAB 1 — Today's Action
 # ===========================================================================
@@ -560,7 +599,10 @@ with tab_market:
             "Price": "{:,.2f}", "1D %": "{:+.2f}", "1M %": "{:+.2f}", "3M %": "{:+.2f}",
             "From High %": "{:+.1f}", "RSI": "{:.0f}", "Final": "{:.0f}",
             "Risk": "{:.0f}", "Conf.": "{:.0f}",
-        }).background_gradient(subset=["Final"], cmap="RdYlGn", vmin=0, vmax=100),
+        }).apply(
+            lambda s: [score_color(v, 0, 100) if s.name == "Final" else "" for v in s],
+            axis=0,
+        ),
         hide_index=True, use_container_width=True,
     )
 
