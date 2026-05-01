@@ -323,7 +323,7 @@ st.markdown(
 # ---------------------------------------------------------------------------
 # Tabs
 # ---------------------------------------------------------------------------
-tab_action, tab_market, tab_metal, tab_alloc, tab_backtest, tab_thesis, tab_alerts = st.tabs([
+tab_action, tab_market, tab_metal, tab_alloc, tab_backtest, tab_thesis, tab_alerts, tab_groww = st.tabs([
     "🎯 Today's Action",
     "📊 Market Overview",
     "🔍 Metal Detail",
@@ -331,6 +331,7 @@ tab_action, tab_market, tab_metal, tab_alloc, tab_backtest, tab_thesis, tab_aler
     "📈 Backtest",
     "📚 Thesis & Instruments",
     "🔔 Alerts",
+    "🔗 Groww Sync",
 ])
 
 
@@ -1011,9 +1012,195 @@ with tab_alerts:
     )
 
 
-# ---------------------------------------------------------------------------
-# Footer
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# TAB 8 — Groww Sync (Phase 1: Read-Only)
+# ===========================================================================
+with tab_groww:
+    st.subheader("🔗 Groww account sync")
+    st.caption(
+        "Phase 1 — Read-only mirror. Pulls your real holdings and live prices "
+        "from Groww. No orders are placed from this tab yet."
+    )
+
+    # Lazy import so the rest of the app works without growwapi installed.
+    try:
+        from groww_provider import make_groww_provider, METAL_TO_NSE_SYMBOLS
+        groww = make_groww_provider()
+    except Exception as e:
+        groww = None
+        st.error(f"Could not initialize Groww module: {e}")
+
+    if groww is None:
+        st.warning(
+            "**No Groww connection detected.** To enable, follow these steps:"
+        )
+        st.markdown(
+            """
+            **1. Generate an API token**
+            - Visit [groww.in/trade-api](https://groww.in/trade-api)
+            - Sign in with your Groww account
+            - Click **Generate API Token** → name it `MetalsCoPilot` → copy the token
+
+            **2. Subscribe to the API plan** (₹499 + GST/month, flat).
+
+            **3. Install the SDK locally:**
+            ```
+            pip install growwapi
+            ```
+
+            **4. Add the token to Streamlit secrets**
+
+            For local development, create `.streamlit/secrets.toml`:
+            ```
+            GROWW_API_TOKEN = "your_token_here"
+            ```
+
+            For Streamlit Cloud: open your app → **Settings → Secrets** → paste the same line.
+
+            **5. Refresh this tab.** Your holdings will appear here.
+            """
+        )
+        st.info(
+            "**Security note:** Never commit `secrets.toml` to git. The provided "
+            "`.gitignore` already excludes it. If you accidentally pushed your "
+            "token, regenerate it on Groww immediately."
+        )
+    else:
+        # ------------------------------------------------------------------
+        # Connected — show the live mirror.
+        # ------------------------------------------------------------------
+        col_a, col_b = st.columns([3, 1])
+        with col_a:
+            st.success("✓ Connected to Groww — read-only mode")
+        with col_b:
+            refresh = st.button("🔄 Refresh now", use_container_width=True)
+
+        with st.spinner("Fetching your Groww snapshot..."):
+            snap = groww.fetch_snapshot(force=refresh)
+
+        if snap is None:
+            st.error("Connection initialized but snapshot fetch failed. Check API token validity.")
+        else:
+            # Top-line metrics
+            m1, m2, m3, m4 = st.columns(4)
+            with m1:
+                st.metric("Total Invested", fmt_inr(snap.total_invested))
+            with m2:
+                st.metric("Current Value", fmt_inr(snap.total_value))
+            with m3:
+                pnl_color = "normal" if snap.total_pnl >= 0 else "inverse"
+                st.metric(
+                    "P&L",
+                    fmt_inr(snap.total_pnl),
+                    delta=f"{snap.total_pnl/snap.total_invested*100:+.2f}%" if snap.total_invested > 0 else None,
+                )
+            with m4:
+                st.metric("Total Holdings", f"{len(snap.holdings)}")
+
+            st.markdown("---")
+
+            # Metals-relevant holdings (filtered to dashboard universe)
+            st.subheader("Metals-relevant holdings")
+            metal_agg = groww.metals_holdings_aggregated()
+
+            if not metal_agg:
+                st.info(
+                    "You don't currently hold any metals-relevant tickers in Groww. "
+                    "When you do, they'll appear here automatically and feed into the "
+                    "dashboard's allocation engine."
+                )
+            else:
+                rows = []
+                for metal_sym, agg in metal_agg.items():
+                    display = METALS_CFG.get(metal_sym, {}).get("display", metal_sym)
+                    rows.append({
+                        "Metal": display,
+                        "Qty": f"{agg['quantity']:.2f}",
+                        "Avg Price": f"₹{agg['avg_price']:,.2f}",
+                        "Invested": fmt_inr(agg["invested_inr"]),
+                        "Current Value": fmt_inr(agg["current_value_inr"]),
+                        "P&L (₹)": fmt_inr(agg["pnl_inr"]),
+                        "P&L %": f"{agg['pnl_pct']:+.2f}%",
+                    })
+                metals_df = pd.DataFrame(rows)
+                st.dataframe(metals_df, hide_index=True, use_container_width=True)
+
+                # Sync button — pushes Groww holdings into the dashboard's portfolio
+                if st.button("⬇ Sync these holdings into dashboard sidebar", type="primary"):
+                    st.session_state["groww_synced_holdings"] = {
+                        m: {
+                            "invested_inr": agg["invested_inr"],
+                            "avg_price": agg["avg_price"],
+                        }
+                        for m, agg in metal_agg.items()
+                    }
+                    st.success(
+                        "Synced. Reload the page or scroll up — the sidebar will "
+                        "use these values for the allocation and rebalance engines."
+                    )
+
+            st.markdown("---")
+
+            # Full holdings (everything you own, not just metals)
+            with st.expander("📋 All Groww holdings (full account)"):
+                if snap.holdings:
+                    full_rows = [
+                        {
+                            "Symbol": h.symbol,
+                            "Qty": f"{h.quantity:.2f}",
+                            "Avg": f"₹{h.avg_price:,.2f}",
+                            "LTP": f"₹{h.ltp:,.2f}",
+                            "Invested": fmt_inr(h.invested),
+                            "Value": fmt_inr(h.current_value),
+                            "P&L %": f"{h.pnl_pct:+.2f}%",
+                        }
+                        for h in snap.holdings
+                    ]
+                    st.dataframe(pd.DataFrame(full_rows), hide_index=True, use_container_width=True)
+                else:
+                    st.caption("No holdings returned.")
+
+            st.markdown("---")
+            st.caption(
+                f"Last refreshed: {datetime.fromtimestamp(snap.timestamp).strftime('%H:%M:%S')} • "
+                "Cache: 30s • Source: Groww live"
+            )
+
+    # ----------------------------------------------------------------------
+    # Phase 2 / Phase 3 preview — what's coming next
+    # ----------------------------------------------------------------------
+    st.markdown("---")
+    with st.expander("🚧 What's coming in Phase 2 & 3"):
+        st.markdown(
+            """
+            **Phase 2 — One-click execution (next build):**
+            - "Execute today's recommendation" button under Tab 1 (Today's Action)
+            - Shows the exact order before placing (symbol, qty, price, est. cost)
+            - You confirm → engine places the order via Groww API
+            - Order status tracked live, written to a local trade log
+            - **You remain the gate. No surprise trades.**
+
+            **Phase 3 — Scheduled auto-trade (final build):**
+            - Cron-style scheduler runs the engine every market day at a time you set
+            - Trades only execute when ALL of these are true:
+              - Daily budget cap (you set this)
+              - Per-trade size cap (you set this)
+              - Confidence ≥ threshold (you set this)
+              - Score ≥ threshold (you set this)
+              - Falling-knife filter passes (always on)
+              - Cash buffer maintained (always on)
+              - Optional: requires SMS/email confirmation for trades > ₹X
+            - Daily summary email at end of trading day
+            - **Kill switch** — single toggle to disable all automation instantly
+
+            Real talk: Phase 3 puts real money in motion based on this engine's signals.
+            We will dry-run for at least 4 weeks in shadow mode (logs orders without
+            placing them) before flipping the live switch.
+            """
+        )
+
+
+
 st.markdown("---")
 st.markdown(
     "<div class='disclaimer'>"
