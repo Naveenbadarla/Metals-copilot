@@ -92,33 +92,89 @@ class GrowwProvider:
     """
     Read-only wrapper around the Groww trading API.
 
-    Initialize with an API token (NOT your account password).
-    Generate the token at https://groww.in/trade-api -> "Generate API Token".
-    Store it in Streamlit secrets, NOT in your code.
+    Supports two auth modes:
+      1. Direct access token (short-lived):
+            GrowwProvider(api_token="eyJhbGc...")
+      2. API key + secret + TOTP secret (long-lived, recommended):
+            GrowwProvider(api_key="...", api_secret="...", totp_secret="...")
+
+    Generate credentials at https://groww.in/trade-api -> "Generate API Keys".
+    Store them in Streamlit secrets, NOT in your code.
     """
 
-    def __init__(self, api_token: Optional[str] = None):
+    def __init__(
+        self,
+        api_token: Optional[str] = None,
+        api_key: Optional[str] = None,
+        api_secret: Optional[str] = None,
+        totp_secret: Optional[str] = None,
+    ):
         self.api_token = api_token or os.getenv("GROWW_API_TOKEN")
+        self.api_key = api_key or os.getenv("GROWW_API_KEY")
+        self.api_secret = api_secret or os.getenv("GROWW_API_SECRET")
+        self.totp_secret = totp_secret or os.getenv("GROWW_TOTP_SECRET")
         self._sdk = None
         self._client = None
         self._cache: Optional[GrowwSnapshot] = None
-        self._cache_ttl_sec = 30  # refresh holdings at most every 30s
+        self._cache_ttl_sec = 30
+        self.last_error: Optional[str] = None  # surface auth/runtime errors to UI
+        self.auth_mode: Optional[str] = None    # "token" | "key_secret_totp"
 
-        if not self.api_token:
-            log.warning("No Groww API token found. Provider will be inactive.")
+        if not (self.api_token or (self.api_key and self.api_secret)):
+            self.last_error = "No Groww credentials found in secrets/env."
+            log.warning(self.last_error)
             return
 
         try:
             from growwapi import GrowwAPI  # type: ignore
             self._sdk = GrowwAPI
-            self._client = GrowwAPI(self.api_token)
-            log.info("Groww client initialized.")
         except ImportError:
-            log.warning(
-                "growwapi package not installed. Run: pip install growwapi"
+            self.last_error = (
+                "growwapi package not installed. Add 'growwapi' to requirements.txt "
+                "or run: pip install growwapi"
             )
-        except Exception as e:
-            log.error(f"Failed to initialize Groww client: {e}")
+            log.warning(self.last_error)
+            return
+
+        # Auth flow 1: API key + secret + TOTP -> exchange for access token
+        if self.api_key and self.api_secret:
+            try:
+                if self.totp_secret:
+                    # Generate a fresh TOTP code from the shared secret
+                    import pyotp  # type: ignore
+                    totp_code = pyotp.TOTP(self.totp_secret).now()
+                    access_token = GrowwAPI.get_access_token(
+                        api_key=self.api_key, secret=self.api_secret, totp=totp_code
+                    )
+                else:
+                    # Some SDK builds accept just key+secret without explicit TOTP
+                    access_token = GrowwAPI.get_access_token(
+                        api_key=self.api_key, secret=self.api_secret
+                    )
+                self._client = GrowwAPI(access_token)
+                self.auth_mode = "key_secret_totp"
+                log.info("Groww client initialized via API key + secret.")
+                return
+            except ImportError:
+                self.last_error = (
+                    "TOTP auth requires the 'pyotp' package. "
+                    "Add 'pyotp' to requirements.txt."
+                )
+                log.warning(self.last_error)
+            except Exception as e:
+                self.last_error = f"Key+secret auth failed: {type(e).__name__}: {e}"
+                log.error(self.last_error)
+                # Fall through to try direct-token mode below if a token also exists
+
+        # Auth flow 2: direct access token
+        if self.api_token and self._client is None:
+            try:
+                self._client = GrowwAPI(self.api_token)
+                self.auth_mode = "token"
+                log.info("Groww client initialized via direct access token.")
+            except Exception as e:
+                self.last_error = f"Token auth failed: {type(e).__name__}: {e}"
+                log.error(self.last_error)
 
     @property
     def is_active(self) -> bool:
@@ -147,7 +203,8 @@ class GrowwProvider:
         try:
             response = self._client.get_holdings_for_user(timeout=10)
         except Exception as e:
-            log.error(f"Groww holdings fetch failed: {e}")
+            self.last_error = f"Holdings fetch failed: {type(e).__name__}: {e}"
+            log.error(self.last_error)
             return self._cache  # return stale cache rather than nothing
 
         # The API returns a dict; the structure as of late 2025:
@@ -329,25 +386,37 @@ class GrowwProvider:
 # ---------------------------------------------------------------------------
 # Streamlit-friendly factory
 # ---------------------------------------------------------------------------
-def make_groww_provider() -> Optional[GrowwProvider]:
+def make_groww_provider() -> Optional["GrowwProvider"]:
     """
     Build a GrowwProvider from Streamlit secrets first, env vars second.
-    Returns None if no credentials are configured.
+    Returns a provider object even if not active — so the UI can read .last_error.
 
-    In Streamlit, store the token like this in .streamlit/secrets.toml:
-        GROWW_API_TOKEN = "your_token_here"
+    Streamlit secrets format (.streamlit/secrets.toml):
 
-    Or on Streamlit Cloud: Settings -> Secrets -> add the key.
+        # Option A — direct access token (short-lived)
+        GROWW_API_TOKEN = "your_access_token_here"
+
+        # Option B — API key + secret + TOTP (recommended, long-lived)
+        GROWW_API_KEY = "your_api_key"
+        GROWW_API_SECRET = "your_api_secret"
+        GROWW_TOTP_SECRET = "your_totp_secret_from_qr"
     """
-    token: Optional[str] = None
+    token = key = secret = totp = None
     try:
         import streamlit as st  # type: ignore
         token = st.secrets.get("GROWW_API_TOKEN")  # type: ignore
+        key = st.secrets.get("GROWW_API_KEY")  # type: ignore
+        secret = st.secrets.get("GROWW_API_SECRET")  # type: ignore
+        totp = st.secrets.get("GROWW_TOTP_SECRET")  # type: ignore
     except Exception:
         pass
-    if not token:
-        token = os.getenv("GROWW_API_TOKEN")
-    if not token:
+    token = token or os.getenv("GROWW_API_TOKEN")
+    key = key or os.getenv("GROWW_API_KEY")
+    secret = secret or os.getenv("GROWW_API_SECRET")
+    totp = totp or os.getenv("GROWW_TOTP_SECRET")
+
+    if not (token or (key and secret)):
         return None
-    provider = GrowwProvider(token)
-    return provider if provider.is_active else None
+    return GrowwProvider(
+        api_token=token, api_key=key, api_secret=secret, totp_secret=totp
+    )
