@@ -1,0 +1,203 @@
+# Metals Investment Dashboard - Configuration
+# All weights, thresholds, and metal definitions live here so logic is tunable
+# without touching code.
+
+app:
+  name: "Metals Co-Pilot"
+  default_currency: "INR"
+  default_mode: "demo"          # demo | live | csv
+  default_strategy: "smart_sip" # smart_sip | dip_accumulator | momentum_dip | gs_ratio | industrial_cycle
+  default_risk: "balanced"      # conservative | balanced | aggressive
+  default_horizon_years: 5
+  min_cash_buffer_pct: 0.10
+  loan_money_min_cash_buffer_pct: 0.25
+  max_single_day_deploy_pct: 0.40    # never deploy >40% of available cash on one day
+  loan_money_max_single_day_deploy_pct: 0.20
+
+# ---------------------------------------------------------------------------
+# Metal universe. Yahoo symbols are global futures; converted to INR using
+# USD/INR. MCX symbols are placeholders for future broker / paid-feed wiring.
+# `category` drives portfolio bucketing and thesis text.
+# `inr_unit` is the rough unit a retail Indian investor sees the price in.
+# ---------------------------------------------------------------------------
+metals:
+  GOLD:
+    display: "Gold"
+    yahoo: "GC=F"        # COMEX gold futures (USD/oz)
+    mcx: "GOLD"
+    category: "precious"
+    inr_unit: "INR / 10g"
+    conv_factor: 0.32148  # 1 troy oz = 31.1035g; rough mult to convert USD/oz -> approx INR/10g (after * USDINR)
+    accent: "#E6B800"
+    thesis_key: "gold"
+    enabled: true
+
+  SILVER:
+    display: "Silver"
+    yahoo: "SI=F"
+    mcx: "SILVER"
+    category: "precious_industrial"
+    inr_unit: "INR / kg"
+    conv_factor: 32.1507  # USD/oz -> INR/kg (after * USDINR)
+    accent: "#C0C0C0"
+    thesis_key: "silver"
+    enabled: true
+
+  COPPER:
+    display: "Copper"
+    yahoo: "HG=F"
+    mcx: "COPPER"
+    category: "industrial"
+    inr_unit: "INR / kg"
+    conv_factor: 2.20462  # USD/lb -> INR/kg (after * USDINR)
+    accent: "#B87333"
+    thesis_key: "copper"
+    enabled: true
+
+  ALUMINIUM:
+    display: "Aluminium"
+    yahoo: null            # not reliably on Yahoo; demo / LME adapter needed
+    mcx: "ALUMINIUM"
+    category: "industrial"
+    inr_unit: "INR / kg"
+    conv_factor: 0.001     # USD/tonne -> INR/kg (after * USDINR)
+    accent: "#A8A9AD"
+    thesis_key: "aluminium"
+    enabled: true
+
+  ZINC:
+    display: "Zinc"
+    yahoo: null
+    mcx: "ZINC"
+    category: "industrial"
+    inr_unit: "INR / kg"
+    conv_factor: 0.001
+    accent: "#7B8D8E"
+    thesis_key: "zinc"
+    enabled: true
+
+  LEAD:
+    display: "Lead"
+    yahoo: null
+    mcx: "LEAD"
+    category: "industrial"
+    inr_unit: "INR / kg"
+    conv_factor: 0.001
+    accent: "#3F4646"
+    thesis_key: "lead"
+    enabled: true
+
+  NICKEL:
+    display: "Nickel"
+    yahoo: null
+    mcx: "NICKEL"
+    category: "industrial"
+    inr_unit: "INR / kg"
+    conv_factor: 0.001
+    accent: "#727472"
+    thesis_key: "nickel"
+    enabled: true
+
+  PLATINUM:
+    display: "Platinum"
+    yahoo: "PL=F"
+    mcx: null
+    category: "precious"
+    inr_unit: "INR / 10g"
+    conv_factor: 0.32148
+    accent: "#E5E4E2"
+    thesis_key: "platinum"
+    enabled: true
+
+  STEELREBAR:
+    display: "Steel Rebar"
+    yahoo: null
+    mcx: "STEELREBAR"
+    category: "industrial"
+    inr_unit: "INR / tonne"
+    conv_factor: 1.0
+    accent: "#71797E"
+    thesis_key: "steel"
+    enabled: false   # disabled by default; data is unreliable
+
+# ---------------------------------------------------------------------------
+# Scoring weights (must sum to 1.0)
+# ---------------------------------------------------------------------------
+scoring:
+  weights:
+    dip: 0.30
+    trend: 0.20
+    rel_value: 0.15
+    vol_adj_opp: 0.15
+    portfolio_need: 0.10
+    macro: 0.10
+  classification:
+    avoid: [0, 30]
+    watch: [31, 45]
+    small_buy: [46, 60]
+    buy: [61, 75]
+    strong_buy: [76, 90]
+    extreme: [91, 100]
+  rsi:
+    oversold: 35
+    overbought: 70
+  dip_thresholds:
+    mild_pct: 3
+    good_pct: 6
+    strong_pct: 10
+    extreme_pct: 15
+
+# ---------------------------------------------------------------------------
+# Allocation bands by risk profile. Numbers are target % of total invested.
+# Cash is held separately as buffer.
+# ---------------------------------------------------------------------------
+allocation_bands:
+  conservative:
+    GOLD: 60
+    SILVER: 20
+    COPPER: 10
+    ALUMINIUM: 3
+    ZINC: 2
+    NICKEL: 0
+    LEAD: 0
+    PLATINUM: 5
+    cash: 5
+  balanced:
+    GOLD: 45
+    SILVER: 25
+    COPPER: 15
+    ALUMINIUM: 5
+    ZINC: 3
+    NICKEL: 2
+    LEAD: 0
+    PLATINUM: 5
+    cash: 5
+  aggressive:
+    GOLD: 30
+    SILVER: 30
+    COPPER: 20
+    ALUMINIUM: 8
+    ZINC: 4
+    NICKEL: 3
+    LEAD: 0
+    PLATINUM: 0
+    cash: 5
+
+# ---------------------------------------------------------------------------
+# Sell / rebalance rules
+# ---------------------------------------------------------------------------
+rebalance:
+  take_profit_gain_pct: 20
+  take_profit_rsi: 70
+  trim_drift_pct_points: 10
+  rebalance_cadence_days: 90
+  never_sell_core_gold_pct: 0.60   # keep at least this fraction of gold target
+
+# ---------------------------------------------------------------------------
+# Gold-Silver ratio bands. Computed as gold_INR_per_10g / silver_INR_per_kg
+# multiplied appropriately to a comparable ratio. We use the standard
+# (gold_USD_per_oz / silver_USD_per_oz) when global data available.
+# ---------------------------------------------------------------------------
+gs_ratio:
+  silver_attractive_above: 85
+  gold_attractive_below: 60
